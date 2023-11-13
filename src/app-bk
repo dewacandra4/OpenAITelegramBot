@@ -1,0 +1,132 @@
+import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import OpenAI from 'openai';
+
+import TelegramBot = require('node-telegram-bot-api');
+import fs = require('fs');
+import path = require('path');
+import { Assistant } from 'openai/resources/beta/assistants/assistants';
+import { Thread } from 'openai/resources/beta/threads/threads';
+
+@Injectable()
+export class AppService {
+  private bot: TelegramBot;
+  private assistants: Assistant;
+  private thread: Thread;
+  constructor(private readonly configService: ConfigService) {
+    const openai = new OpenAI({
+      apiKey: this.configService.get('OPENAI_API_KEY'),
+    });
+
+    this.bot = new TelegramBot(this.configService.get('TELEGRAM_BOT_TOKEN'), {
+      polling: true,
+    });
+    this.bot.on('message', async (msg) => {
+      // let response = '';
+      // console.log(msg);
+      // try {
+      //   const res = await openai.chat.completions.create({
+      //     model: 'gpt-3.5-turbo',
+      //     messages: [
+      //       {
+      //         role: 'user',
+      //         content: msg.text,
+      //       },
+      //     ],
+      //   });
+      //   console.log('res', res);
+      //   this.bot.sendMessage(msg.chat.id, res.choices[0].message.content);
+      // } catch (error) {
+      //   response = error.message;
+      //   this.bot.sendMessage(msg.chat.id, response);
+      // }
+
+      let response = '';
+
+      if (msg.text.includes('/assist')) {
+        const fileData = path.resolve(__dirname, '../trainingData/test.pdf');
+        const fileOpenAi = await openai.files.create({
+          file: fs.createReadStream(fileData),
+          purpose: 'assistants',
+        });
+
+        //if file uploaded successfully then
+        // let user know
+        if (fileOpenAi.status === 'uploaded') {
+          this.bot.sendMessage(msg.chat.id, 'File is ready');
+          this.bot.sendMessage(
+            msg.chat.id,
+            'Please ask me any question regarding fried rice :)',
+          );
+        }
+
+        // add the file to assistant
+        try {
+          this.assistants = await openai.beta.assistants.create({
+            name: 'Holo',
+            instructions:
+              'You are a customer support chatbot. Use your knowledge base to best respond to customer queries',
+            model: 'gpt-3.5-turbo-1106',
+            tools: [
+              {
+                type: 'retrieval',
+              },
+            ],
+            file_ids: [fileOpenAi.id],
+          });
+          console.log(this.assistants);
+        } catch (error) {
+          response = error.message;
+          this.bot.sendMessage(msg.chat.id, response);
+        }
+
+        // create a thread for the assistant
+        try {
+          this.thread = await openai.beta.threads.create({
+            messages: [
+              {
+                role: 'user',
+                content: msg.text,
+                file_ids: [fileOpenAi.id],
+              },
+            ],
+          });
+        } catch (error) {
+          response = error.message;
+          this.bot.sendMessage(msg.chat.id, response);
+        }
+      }
+
+      try {
+        // run the assistant
+        const threadId = this.thread.id;
+        const run = await openai.beta.threads.runs.create(threadId, {
+          assistant_id: this.assistants.id,
+        });
+        console.log('res run', run);
+
+        // display the response
+        const runDisplay = await openai.beta.threads.runs.retrieve(
+          threadId,
+          run.id,
+        );
+
+        console.log('runDisplay', runDisplay);
+
+        const messages = await openai.beta.threads.messages.list(threadId);
+        console.log('messages data', messages.data);
+        messages.data.forEach((message) => {
+          console.log('message content gan gan', message.content);
+          if (message.role === 'assistant') {
+            if (message.content.length > 0) {
+              this.bot.sendMessage(msg.chat.id, message.text.value);
+            }
+          }
+        });
+      } catch (error) {
+        response = error.message;
+        this.bot.sendMessage(msg.chat.id, response);
+      }
+    });
+  }
+}

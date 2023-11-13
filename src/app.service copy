@@ -1,0 +1,66 @@
+import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import OpenAI from 'openai';
+
+import TelegramBot = require('node-telegram-bot-api');
+import fs = require('fs');
+import path = require('path');
+import { Assistant } from 'openai/resources/beta/assistants/assistants';
+import { Thread } from 'openai/resources/beta/threads/threads';
+
+@Injectable()
+export class AppService {
+  private bot: TelegramBot;
+  private assistants: Assistant;
+  private thread: Thread;
+  private openai: OpenAI;
+  constructor(private readonly configService: ConfigService) {
+    this.openai = new OpenAI({
+      apiKey: this.configService.get('OPENAI_API_KEY'),
+    });
+
+    this.bot = new TelegramBot(this.configService.get('TELEGRAM_BOT_TOKEN'), {
+      polling: true,
+    });
+    // if user select commends then
+    // send them to bot for help
+
+    this.bot.onText(/\/start/, (msg) => {
+      this.bot.sendMessage(msg.chat.id, 'Hi there! How can I help you?');
+    });
+
+    this.bot.onText(/\/completion/, () => {
+      this.startCompletionChat();
+    });
+  }
+
+  private async getAssistants() {
+    const fileData = path.resolve(__dirname, '../trainingData/test.pdf');
+    const fileOpenAi = await this.openai.files.create({
+      file: fs.createReadStream(fileData),
+      purpose: 'assistants',
+    });
+  }
+
+  private async startCompletionChat() {
+    this.bot.on('message', async (msg) => {
+      let response = '';
+      try {
+        const res = await this.openai.chat.completions.create({
+          model: 'gpt-3.5-turbo',
+          messages: [
+            {
+              role: 'user',
+              content: msg.text,
+            },
+          ],
+        });
+        console.log('res', res);
+        this.bot.sendMessage(msg.chat.id, res.choices[0].message.content);
+      } catch (error) {
+        response = error.message;
+        this.bot.sendMessage(msg.chat.id, response);
+      }
+    });
+  }
+}
